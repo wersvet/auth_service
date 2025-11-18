@@ -9,6 +9,7 @@ import (
 	"auth-service/internal/db"
 	"auth-service/internal/handlers"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,10 +37,18 @@ func main() {
 
 	router := gin.Default()
 	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:5173"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Authorization", "Content-Type"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+	}))
 
 	router.POST("/auth/register", handler.Register)
 	router.POST("/auth/login", handler.Login)
 	router.GET("/auth/validate", handler.ValidateToken)
+	router.GET("/auth/user/:id", handler.GetUserByID)
 
 	port := os.Getenv("PORT")
 	if port == "" {

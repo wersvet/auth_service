@@ -156,3 +156,16 @@ func isUniqueViolation(err error) bool {
 	}
 	return false
 }
+
+func (a *AuthHandler) GetUserByID(c *gin.Context) {
+	id := c.Param("id")
+
+	var user models.User
+	err := a.db.Get(&user, "SELECT id, username, created_at FROM users WHERE id=$1", id)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "user not found"})
+		return
+	}
+
+	c.JSON(200, user)
+}
