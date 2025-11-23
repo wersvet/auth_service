@@ -41,26 +41,27 @@ type userResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Register creates a new user and returns a JWT.
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "не json"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
 	if len(req.Password) < 6 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "пароль меньше 6"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 6 characters"})
 		return
 	}
 	if req.Username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "требуется имя пользователя"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username is required"})
 		return
 	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "не удалось обработать пароль"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process password"})
 		return
 	}
 
@@ -117,11 +118,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, authResponse{Token: token, User: mapUser(user)})
 }
 
-// ValidateToken проверяет действительность JWT.
+// ValidateToken verifies a JWT and returns user claims.
 func (h *AuthHandler) ValidateToken(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "отсутствует заголовок авторизации"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
 		return
 	}
 
@@ -147,22 +148,11 @@ func mapUser(u models.User) userResponse {
 }
 
 func isUniqueViolation(err error) bool {
+	// PostgreSQL unique_violation code
 	const uniqueViolation = "23505"
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) {
 		return pqErr.Code == uniqueViolation
 	}
 	return false
-}
-
-func (a *AuthHandler) GetUserByID(c *gin.Context) {
-	id := c.Param("id")
-
-	var user models.User
-	err := a.db.Get(&user, "SELECT id, username, created_at FROM users WHERE id=$1", id)
-	if err != nil {
-		c.JSON(404, gin.H{"error": "пользователь не найден"})
-		return
-	}
-	c.JSON(200, user)
 }

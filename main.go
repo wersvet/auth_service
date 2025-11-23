@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"auth-service/internal/db"
-	"auth-service/internal/handlers"
-
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc"
+
+	"auth-service/internal/db"
+	grpcserver "auth-service/internal/grpc"
+	"auth-service/internal/handlers"
+	authpb "auth-service/proto/auth"
 )
 
 func main() {
@@ -37,18 +43,10 @@ func main() {
 
 	router := gin.Default()
 	router.Use(gin.Logger(), gin.Recovery())
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Authorization", "Content-Type"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-	}))
 
 	router.POST("/auth/register", handler.Register)
 	router.POST("/auth/login", handler.Login)
 	router.GET("/auth/validate", handler.ValidateToken)
-	router.GET("/auth/user/:id", handler.GetUserByID)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -63,8 +61,41 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("starting auth-service on port %s", port)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+	grpcAddr := ":8084"
+	grpcListener, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		log.Fatalf("failed to listen on %s: %v", grpcAddr, err)
 	}
+
+	grpcSrv := grpc.NewServer()
+	authpb.RegisterAuthServiceServer(grpcSrv, grpcserver.NewAuthGRPCServer(database, jwtSecret))
+
+	go func() {
+		log.Printf("starting auth-service gRPC on %s", grpcAddr)
+		if err := grpcSrv.Serve(grpcListener); err != nil {
+			log.Fatalf("gRPC server error: %v", err)
+		}
+	}()
+
+	go func() {
+		log.Printf("starting auth-service HTTP on port %s", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("shutdown signal received")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	grpcSrv.GracefulStop()
+	log.Println("servers stopped gracefully")
 }
