@@ -16,6 +16,8 @@ import (
 	"auth-service/internal/db"
 	grpcserver "auth-service/internal/grpc"
 	"auth-service/internal/handlers"
+	"auth-service/internal/rabbitmq"
+	"auth-service/internal/telemetry"
 	authpb "auth-service/proto/auth"
 )
 
@@ -39,7 +41,15 @@ func main() {
 		log.Fatalf("failed to run migrations: %v", err)
 	}
 
-	handler := handlers.NewAuthHandler(database, jwtSecret)
+	amqpURL := envWithDefault("AMQP_URL", "amqp://guest:guest@localhost:5672/")
+	logsExchange := envWithDefault("LOGS_EXCHANGE", "logs.events")
+	serviceName := envWithDefault("SERVICE_NAME", "auth-service")
+	environment := envWithDefault("ENVIRONMENT", "local")
+
+	publisher := rabbitmq.NewPublisher(amqpURL, logsExchange)
+	auditEmitter := telemetry.NewAuditEmitter(publisher, serviceName, environment)
+
+	handler := handlers.NewAuthHandler(database, jwtSecret, auditEmitter)
 
 	router := gin.Default()
 	router.Use(gin.Logger(), gin.Recovery())
@@ -97,5 +107,13 @@ func main() {
 	}
 
 	grpcSrv.GracefulStop()
+	publisher.Close()
 	log.Println("servers stopped gracefully")
+}
+
+func envWithDefault(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
 }

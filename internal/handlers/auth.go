@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -14,15 +15,17 @@ import (
 
 	"auth-service/internal/middleware"
 	"auth-service/internal/models"
+	"auth-service/internal/telemetry"
 )
 
 type AuthHandler struct {
-	db        *sqlx.DB
-	jwtSecret string
+	db           *sqlx.DB
+	jwtSecret    string
+	auditEmitter telemetry.Emitter
 }
 
-func NewAuthHandler(db *sqlx.DB, jwtSecret string) *AuthHandler {
-	return &AuthHandler{db: db, jwtSecret: jwtSecret}
+func NewAuthHandler(db *sqlx.DB, jwtSecret string, auditEmitter telemetry.Emitter) *AuthHandler {
+	return &AuthHandler{db: db, jwtSecret: jwtSecret, auditEmitter: auditEmitter}
 }
 
 type registerRequest struct {
@@ -45,22 +48,26 @@ type userResponse struct {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.emitAudit(c, "ERROR", "invalid request payload", nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
 	if len(req.Password) < 6 {
+		h.emitAudit(c, "ERROR", "invalid request payload", nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 6 characters"})
 		return
 	}
 	if req.Username == "" {
+		h.emitAudit(c, "ERROR", "invalid request payload", nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username is required"})
 		return
 	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error", nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process password"})
 		return
 	}
@@ -69,19 +76,24 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	query := `INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, password_hash, created_at`
 	if err := h.db.QueryRowx(query, req.Username, string(hashed)).StructScan(&user); err != nil {
 		if isUniqueViolation(err) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "username already exists"})
+			h.emitAudit(c, "ERROR", "username already exists", nil)
+			c.JSON(http.StatusConflict, gin.H{"error": "username already exists"})
 			return
 		}
+		h.emitAudit(c, "ERROR", "internal error", nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
 		return
 	}
 
 	token, err := middleware.GenerateToken(h.jwtSecret, user.ID, user.Username, 72*time.Hour)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error", nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
 
+	userID := user.ID
+	h.emitAudit(c, "INFO", fmt.Sprintf("Пользователь '%d' успешно зарегистрировался", userID), &userID)
 	c.JSON(http.StatusOK, authResponse{Token: token, User: mapUser(user)})
 }
 
@@ -89,6 +101,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.emitAudit(c, "ERROR", "invalid request payload", nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
@@ -97,24 +110,30 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	query := `SELECT id, username, password_hash, created_at FROM users WHERE username=$1`
 	if err := h.db.Get(&user, query, req.Username); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			h.emitAudit(c, "ERROR", "Имя или пароль введены неправильно", nil)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 			return
 		}
+		h.emitAudit(c, "ERROR", "internal error", nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch user"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		h.emitAudit(c, "ERROR", "Имя или пароль введены неправильно", nil)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
 	token, err := middleware.GenerateToken(h.jwtSecret, user.ID, user.Username, 72*time.Hour)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error", nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
 
+	userID := user.ID
+	h.emitAudit(c, "INFO", fmt.Sprintf("Пользователь '%d' успешно вошёл", userID), &userID)
 	c.JSON(http.StatusOK, authResponse{Token: token, User: mapUser(user)})
 }
 
@@ -122,25 +141,41 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) ValidateToken(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
+		h.emitAudit(c, "ERROR", "invalid token", nil)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
 		return
 	}
 
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 	if tokenString == authHeader {
+		h.emitAudit(c, "ERROR", "invalid token", nil)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header"})
 		return
 	}
 
 	claims, err := middleware.ParseToken(h.jwtSecret, tokenString)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "invalid token", nil)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		return
 	}
 
 	userID, _ := claims["user_id"].(float64)
 
+	emitUserID := int64(userID)
+	h.emitAudit(c, "DEBUG", "token valid", &emitUserID)
 	c.JSON(http.StatusOK, gin.H{"valid": true, "user_id": int64(userID), "username": claims["username"]})
+}
+
+func (h *AuthHandler) emitAudit(c *gin.Context, level, text string, userID *int64) {
+	if h.auditEmitter == nil {
+		return
+	}
+
+	requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
+	if err := h.auditEmitter.EmitAudit(c.Request.Context(), level, text, requestID, userID); err != nil {
+		c.Error(err)
+	}
 }
 
 func mapUser(u models.User) userResponse {
