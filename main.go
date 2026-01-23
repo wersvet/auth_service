@@ -16,6 +16,7 @@ import (
 	"auth-service/internal/db"
 	grpcserver "auth-service/internal/grpc"
 	"auth-service/internal/handlers"
+	"auth-service/internal/metrics"
 	"auth-service/internal/rabbitmq"
 	"auth-service/internal/telemetry"
 	authpb "auth-service/proto/auth"
@@ -48,12 +49,14 @@ func main() {
 
 	publisher := rabbitmq.NewPublisher(amqpURL, logsExchange)
 	auditEmitter := telemetry.NewAuditEmitter(publisher, serviceName, environment)
+	metricsCollector := metrics.New(serviceName)
 
-	handler := handlers.NewAuthHandler(database, jwtSecret, auditEmitter)
+	handler := handlers.NewAuthHandler(database, jwtSecret, auditEmitter, metricsCollector)
 
 	router := gin.Default()
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(gin.Logger(), gin.Recovery(), metricsCollector.Middleware())
 
+	router.GET("/metrics", gin.WrapH(metricsCollector.Handler()))
 	router.POST("/auth/register", handler.Register)
 	router.POST("/auth/login", handler.Login)
 	router.GET("/auth/validate", handler.ValidateToken)

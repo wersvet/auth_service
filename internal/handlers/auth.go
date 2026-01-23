@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"auth-service/internal/middleware"
+	"auth-service/internal/metrics"
 	"auth-service/internal/models"
 	"auth-service/internal/telemetry"
 )
@@ -22,10 +23,16 @@ type AuthHandler struct {
 	db           *sqlx.DB
 	jwtSecret    string
 	auditEmitter telemetry.Emitter
+	metrics      *metrics.Metrics
 }
 
-func NewAuthHandler(db *sqlx.DB, jwtSecret string, auditEmitter telemetry.Emitter) *AuthHandler {
-	return &AuthHandler{db: db, jwtSecret: jwtSecret, auditEmitter: auditEmitter}
+func NewAuthHandler(db *sqlx.DB, jwtSecret string, auditEmitter telemetry.Emitter, metricsCollector *metrics.Metrics) *AuthHandler {
+	return &AuthHandler{
+		db:           db,
+		jwtSecret:    jwtSecret,
+		auditEmitter: auditEmitter,
+		metrics:      metricsCollector,
+	}
 }
 
 type registerRequest struct {
@@ -46,6 +53,11 @@ type userResponse struct {
 
 // Register creates a new user and returns a JWT.
 func (h *AuthHandler) Register(c *gin.Context) {
+	status := metrics.AuthStatusFailed
+	defer func() {
+		h.metrics.IncAuthRegister(status)
+	}()
+
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.emitAudit(c, "ERROR", "invalid request payload", nil)
@@ -94,11 +106,17 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	userID := user.ID
 	h.emitAudit(c, "INFO", fmt.Sprintf("Пользователь '%d' успешно зарегистрировался", userID), &userID)
+	status = metrics.AuthStatusSuccess
 	c.JSON(http.StatusOK, authResponse{Token: token, User: mapUser(user)})
 }
 
 // Login authenticates a user and returns a JWT.
 func (h *AuthHandler) Login(c *gin.Context) {
+	status := metrics.AuthStatusFailed
+	defer func() {
+		h.metrics.IncAuthLogin(status)
+	}()
+
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.emitAudit(c, "ERROR", "invalid request payload", nil)
@@ -134,6 +152,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	userID := user.ID
 	h.emitAudit(c, "INFO", fmt.Sprintf("Пользователь '%d' успешно вошёл", userID), &userID)
+	status = metrics.AuthStatusSuccess
 	c.JSON(http.StatusOK, authResponse{Token: token, User: mapUser(user)})
 }
 

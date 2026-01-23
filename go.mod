@@ -8,12 +8,20 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.10.9
+	github.com/prometheus/client_golang v1.19.1
 	github.com/rabbitmq/amqp091-go v1.10.0
 	golang.org/x/crypto v0.44.1-0.20251119192837-e79546e28b85
 	google.golang.org/grpc v1.77.0
 )
 
-require google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8 // indirect
+require (
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/prometheus/client_model v0.5.0 // indirect
+	github.com/prometheus/common v0.48.0 // indirect
+	github.com/prometheus/procfs v0.12.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8 // indirect
+)
 
 require (
 	github.com/bytedance/sonic v1.14.0 // indirect
